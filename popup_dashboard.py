@@ -730,6 +730,41 @@ elif page == "🍜 식품 분류 분석":
 elif page == "💰 비용/수익 분석":
     show_action_plan("매출 상위 그룹의 <b>지출 패턴</b>을 참고하여 예산을 배분하고, 손익분기점을 넘기기 위한 <b>일일 최소 목표 매출액</b>을 산출하세요.")
 
+    # ── 예산 입력 및 필터링 ──────────────────────────────────
+    user_budget_analysis = st.number_input("나의 가용 예산 (원)", min_value=0, value=0, step=5000000, format="%d")
+
+    if user_budget_analysis > 0:
+        # 예산 수준 분석 (백분위 및 예상 매출)
+        costs = fdf['총_지출_비용(원)']
+        if not costs.empty:
+            pct_rank = (costs < user_budget_analysis).mean() * 100
+            top_pct = 100 - pct_rank
+            
+            if pct_rank >= 66:
+                tier = "상위 33%"
+                t_color = "#E74C3C"
+            elif pct_rank >= 33:
+                tier = "중위 33%"
+                t_color = "#F39C12"
+            else:
+                tier = "하위 33%"
+                t_color = "#2ECC71"
+            
+            # 유사 예산 구간(±20%)의 평균 ROI로 예상 매출 산출
+            similar_df = fdf[(costs >= user_budget_analysis * 0.8) & (costs <= user_budget_analysis * 1.2)]
+            roi = similar_df['총_매출액(원)'].sum() / similar_df['총_지출_비용(원)'].sum() if not similar_df.empty else fdf['총_매출액(원)'].sum() / fdf['총_지출_비용(원)'].sum()
+            exp_sales = user_budget_analysis * roi
+            
+            st.markdown(f"""
+            <div style="background-color: #FFF8E1; border: 1px solid #FFE082; border-radius: 10px; padding: 15px; margin-top: 10px; margin-bottom: 20px;">
+                <div style="color: #F57F17; font-weight: 700; font-size: 1.1rem; margin-bottom: 5px;">💡 예산 분석 리포트</div>
+                <div style="color: #4E342E; font-size: 1.0rem; line-height: 1.6;">
+                    입력하신 <b>{fmt_money(user_budget_analysis)}원</b>은 전체 팝업 중 <span style="color:{t_color}; font-weight:800;">{tier} (상위 {top_pct:.1f}%)</span> 수준입니다.<br>
+                    동일 규모 운영 시, 예상되는 총 매출액은 약 <b>{fmt_money(exp_sales)}원</b>입니다.
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
     cost_labels = ['대관료','인테리어','마케팅','운영인건비','물류기타']
     cost_clrs   = ['#FFB300','#3498DB','#F39C12','#2ECC71','#9B59B6']
     cost_descs  = [
@@ -742,13 +777,23 @@ elif page == "💰 비용/수익 분석":
 
     # 1. 평균 비용 구성
     st.markdown('<p class="section-title">평균 비용 구성</p>', unsafe_allow_html=True)
+    
+    sec1_df = pd.DataFrame()
+    if user_budget_analysis > 0:
+        sec1_df = fdf[fdf['총_지출_비용(원)'] <= user_budget_analysis].copy()
+        if sec1_df.empty:
+            st.warning(f"설정하신 예산 ({fmt_money(user_budget_analysis)}원) 이하로 운영된 팝업스토어 데이터가 없습니다.")
+    else:
+        st.info("예산을 입력하면 해당 예산 범위 내의 평균 비용 구성을 분석합니다.")
+
     c_pie, c_desc = st.columns([1.6, 1])
     with c_pie:
-        avg_costs = [fdf[c].mean() for c in cost_cols]
-        fig = go.Figure(go.Pie(labels=cost_labels, values=avg_costs,
-            marker_colors=cost_clrs, hole=0.42, textinfo='percent+label', textposition='outside', textfont_size=13))
-        fig.update_layout(**L(400, legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5)), showlegend=True)
-        st.plotly_chart(fig, use_container_width=True)
+        if not sec1_df.empty:
+            avg_costs = [sec1_df[c].mean() for c in cost_cols]
+            fig = go.Figure(go.Pie(labels=cost_labels, values=avg_costs,
+                marker_colors=cost_clrs, hole=0.42, textinfo='percent+label', textposition='outside', textfont_size=13))
+            fig.update_layout(**L(400, legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5)), showlegend=True)
+            st.plotly_chart(fig, use_container_width=True)
     with c_desc:
         st.markdown("<div style='height: 20px;'></div>", unsafe_allow_html=True)
         for label, color, desc in zip(cost_labels, cost_clrs, cost_descs):
@@ -763,7 +808,7 @@ elif page == "💰 비용/수익 분석":
 
     # 2. 매출 구간별 비용 구조 (파이 차트 3개)
     st.markdown('<p class="section-title">매출 구간별 비용 구조</p>', unsafe_allow_html=True)
-    st.info(f"💡 전체 {len(fdf):,}개 팝업스토어를 **총 매출액 기준**으로 **하위 33% / 중위 33% / 상위 33%**로 구분하여, 성과 그룹별 비용 지출 패턴을 분석합니다.")
+    st.info(f"💡 전체 **{len(fdf):,}개** 팝업스토어를 **총 매출액 기준**으로 **하위 33% / 중위 33% / 상위 33%**로 구분하여, 성과 그룹별 비용 지출 패턴을 분석합니다.")
     
     try:
         fdf['매출구간'] = pd.qcut(fdf['총_매출액(원)'], q=3, labels=['하위 33%','중위 33%','상위 33%'])
