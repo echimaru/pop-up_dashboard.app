@@ -180,20 +180,45 @@ with st.sidebar:
             best_month = valid_pops.groupby(valid_pops['시작일'].dt.month)['총_매출액(원)'].mean().idxmax()
 
             if user_area_plan == '전체':
-                grp = valid_pops.groupby(['상권구분', '식품_세부분류'])[['순수익(원)', '총_매출액(원)']].mean()
+                grp = valid_pops.groupby(['상권구분', '식품_세부분류'])[['순수익(원)', '총_매출액(원)', '방문객_수(명)']].mean()
                 best_combo = grp['순수익(원)'].idxmax()
                 best_rev = grp.loc[best_combo, '총_매출액(원)']
-                st.success(f"예산 **{user_budget:,}원**으로\n\n📍 **{best_combo[0]}** 상권에서\n🍜 **{best_combo[1]}** 팝업을\n📅 **{best_month}월**에 오픈하는 것을\n추천해요! (예상 평균 매출: {fmt_money(best_rev)}원)")
+                best_prof = grp.loc[best_combo, '순수익(원)']
+                best_vis = grp.loc[best_combo, '방문객_수(명)']
+                
+                st.success(f"""
+                **💡 추천 전략**
+                📍 **{best_combo[0]}**
+                🍜 **{best_combo[1]}**
+                📅 **{best_month}월** 오픈
+                
+                **📊 예상 평균 성과**
+                💰 매출: {fmt_money(best_rev)}원
+                💎 순수익: {fmt_money(best_prof)}원
+                👥 방문객: {best_vis:,.0f}명
+                """)
             else:
-                grp = valid_pops.groupby('식품_세부분류')[['순수익(원)', '총_매출액(원)']].mean()
+                grp = valid_pops.groupby('식품_세부분류')[['순수익(원)', '총_매출액(원)', '방문객_수(명)']].mean()
                 best_food = grp['순수익(원)'].idxmax()
                 best_rev = grp.loc[best_food, '총_매출액(원)']
-                st.success(f"**{user_area_plan}**에서\n예산 **{user_budget:,}원**으로는\n\n🍜 **{best_food}** 팝업을\n📅 **{best_month}월**에 오픈하는 것이\n유리해요! (예상 평균 매출: {fmt_money(best_rev)}원)")
+                best_prof = grp.loc[best_food, '순수익(원)']
+                best_vis = grp.loc[best_food, '방문객_수(명)']
+                
+                st.success(f"""
+                **💡 {user_area_plan} 추천 전략**
+                🍜 **{best_food}**
+                📅 **{best_month}월** 오픈
+                
+                **📊 예상 평균 성과**
+                💰 매출: {fmt_money(best_rev)}원
+                💎 순수익: {fmt_money(best_prof)}원
+                👥 방문객: {best_vis:,.0f}명
+                """)
         else:
             st.warning("조건에 맞는 데이터가 부족해요. 예산을 조금 더 늘려보세요!")
 
     # 지도 페이지 전용 필터 변수 초기화 (오류 방지)
-    min_cost, max_cost = int(df['총_지출_비용(원)'].min()), int(df['총_지출_비용(원)'].max())
+    min_cost, max_cost = 0, int(df['총_지출_비용(원)'].max())
     sel_cost = (min_cost, max_cost)
     min_dur, max_dur = int(df['운영_기간(일)'].min()), int(df['운영_기간(일)'].max())
     sel_dur = (min_dur, max_dur)
@@ -384,29 +409,35 @@ elif page == "📍 상권 및 위치 분석":
     with map_col:
         c_search, c_reset = st.columns([3, 1])
         with c_search:
-            def on_search_submit():
-                term = st.session_state.get('area_search_term', '').strip()
-                if term:
-                    matches = [area for area in fdf['상권구분'].unique() if term in area]
-                    if matches:
-                        st.session_state['drill_area'] = matches[0]
-                        st.session_state['prev_clicked'] = None
-                    else:
-                        st.toast(f"'{term}' 관련 상권을 찾을 수 없습니다.")
+            # 검색 가능한 Selectbox로 변경 (자동완성 효과)
+            search_options = sorted(fdf['상권구분'].unique().tolist())
+            
+            # 외부(지도 클릭 등)에서 drill_area가 변경되었을 때 selectbox에 반영
+            if st.session_state['drill_area'] in search_options:
+                st.session_state['area_search_select'] = st.session_state['drill_area']
+            else:
+                st.session_state['area_search_select'] = None
 
-            st.text_input(
+            def on_search_change():
+                st.session_state['drill_area'] = st.session_state['area_search_select']
+                st.session_state['prev_clicked'] = None
+
+            st.selectbox(
                 "상권 검색",
-                placeholder="지역명 입력 (예: 성수, 홍대)",
+                options=search_options,
+                index=None,
+                placeholder="지역명 검색 (예: 성수, 홍대)",
                 label_visibility="collapsed",
-                key="area_search_term",
-                on_change=on_search_submit
+                key="area_search_select",
+                on_change=on_search_change
             )
         with c_reset:
-            if st.button("🔄 초기화", use_container_width=True):
+            def reset_callback():
                 st.session_state['drill_area'] = None
                 st.session_state['prev_clicked'] = None
-                st.session_state['area_search_term'] = ""
-                st.rerun()
+                st.session_state['area_search_select'] = None
+            
+            st.button("🔄 초기화", use_container_width=True, on_click=reset_callback)
 
         # 현재 위치 표시
         if st.session_state['drill_area']:
@@ -839,18 +870,15 @@ elif page == "👥 연령대 분석":
                 symbol = "▲" if rate > 0 else "▼" if rate < 0 else "-"
                 color = "#2ECC71" if rate > 0 else "#E74C3C" if rate < 0 else "#7F8C8D"
                 val_text = f"{symbol} {abs(rate):.1f}%"
-                desc = "전년 동기 대비"
             else:
                 val_text = "-"
                 color = "#999"
-                desc = "전년 데이터 없음"
             
             with kpi_cols[i % 3]:
                 st.markdown(f"""
-                <div style="background-color: #FFFFFF; border: 1px solid #E8DDD0; border-radius: 12px; padding: 12px; text-align: center; margin-bottom: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.03);">
-                    <div style="font-size: 0.85rem; color: #6D4C41; font-weight: 700; margin-bottom: 4px;">{label}</div>
-                    <div style="font-size: 1.4rem; font-weight: 800; color: {color}; line-height: 1.2;">{val_text}</div>
-                    <div style="font-size: 0.7rem; color: #999; margin-top: 2px;">{desc}</div>
+            <div class="metric-card">
+                <div class="metric-value" style="color:{color}">{val_text}</div>
+                <div class="metric-label">{label}</div>
                 </div>
                 """, unsafe_allow_html=True)
 
@@ -949,18 +977,15 @@ elif page == "📣 마케팅 분석":
             symbol = "▲" if rate > 0 else "▼" if rate < 0 else "-"
             color = "#2ECC71" if rate > 0 else "#E74C3C" if rate < 0 else "#7F8C8D"
             val_text = f"{symbol} {abs(rate):.1f}%"
-            desc = "전년 동분기 대비"
         else:
             val_text = "-"
             color = "#999"
-            desc = "전년 데이터 없음"
             
         with kpi_cols[i]:
             st.markdown(f"""
-            <div style="background-color: #FFFFFF; border: 1px solid #E8DDD0; border-radius: 12px; padding: 12px; text-align: center; margin-bottom: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.03);">
-                <div style="font-size: 0.85rem; color: #6D4C41; font-weight: 700; margin-bottom: 4px;">{label}</div>
-                <div style="font-size: 1.4rem; font-weight: 800; color: {color}; line-height: 1.2;">{val_text}</div>
-                <div style="font-size: 0.7rem; color: #999; margin-top: 2px;">{desc}</div>
+            <div class="metric-card">
+                <div class="metric-value" style="color:{color}">{val_text}</div>
+                <div class="metric-label">{label}</div>
             </div>
             """, unsafe_allow_html=True)
 
