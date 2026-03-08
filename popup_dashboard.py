@@ -24,7 +24,7 @@ st.markdown("""
     }
     .dashboard-header::after {
         content: '🏪'; position: absolute; right: 2.5rem; top: 50%;
-        transform: translateY(-50%); font-size: 4rem; opacity: 0.18;
+        transform: translateY(-50%); font-size: 4rem; opacity: 1.0;
     }
     .dashboard-title  { font-size: 2.2rem; font-weight: 900; color: white; margin: 0; letter-spacing: -0.03rem; }
     .dashboard-subtitle { font-size: 1.0rem; color: rgba(255,255,255,0.8); margin-top: 0.5rem; font-weight: 400; }
@@ -218,7 +218,7 @@ with st.sidebar:
             st.warning("조건에 맞는 데이터가 부족해요. 예산을 조금 더 늘려보세요!")
 
     # 지도 페이지 전용 필터 변수 초기화 (오류 방지)
-    min_cost, max_cost = 0, int(df['총_지출_비용(원)'].max())
+    min_cost, max_cost = 0, 300000000  # 3억원
     sel_cost = (min_cost, max_cost)
     min_dur, max_dur = int(df['운영_기간(일)'].min()), int(df['운영_기간(일)'].max())
     sel_dur = (min_dur, max_dur)
@@ -392,7 +392,7 @@ elif page == "📍 상권 및 위치 분석":
         st.markdown('<p class="section-title" style="margin-top: 0;">필터 설정</p>', unsafe_allow_html=True)
         f1, f2 = st.columns(2)
         with f1:
-            sel_cost = st.slider("예산 범위 (총 지출)", min_cost, max_cost, (min_cost, max_cost), step=100000, format="%d원")
+            sel_cost = st.slider("예산 범위 (총 지출)", 0, max_cost, (0, max_cost), step=100000, format="%d원")
         with f2:
             sel_dur = st.slider("운영 기간 (일)", min_dur, max_dur, (min_dur, max_dur))
         st.markdown("---")
@@ -459,6 +459,9 @@ elif page == "📍 상권 및 위치 분석":
         map_key = f"map_{st.session_state['drill_area']}"
         m = folium.Map(location=map_center, zoom_start=map_zoom)
 
+        # 클러스터 추가 (줌아웃 시 개수 표시)
+        marker_cluster = MarkerCluster().add_to(m)
+
         # CircleMarker로 교체 (클릭 감지 안정적)
         for idx, row in fdf.iterrows():
             is_selected = (st.session_state['drill_area'] == row['상권구분'])
@@ -488,7 +491,7 @@ elif page == "📍 상권 및 위치 분석":
                     folium.IFrame(popup_html, width=240, height=170), max_width=240
                 ),
                 tooltip=f"{row['상세_주소']} ({row['식품_세부분류']})"
-            ).add_to(m)
+            ).add_to(marker_cluster)
 
         map_data = st_folium(m, use_container_width=True, height=500, key=map_key,
                              returned_objects=["last_object_clicked", "bounds"])
@@ -512,12 +515,8 @@ elif page == "📍 상권 및 위치 분석":
                         st.rerun()
 
         # ── bounds 기반 view_df 결정 ───────────────────────
-        # 클릭된 상권이 있으면 우선, 없으면 현재 지도 화면 범위로 필터
-        if st.session_state['drill_area']:
-            view_df = fdf[fdf['상권구분'] == st.session_state['drill_area']].copy()
-            grp_col = '식품_세부분류'
-            level_name = f"📌 {st.session_state['drill_area']} 상권"
-        elif map_data and map_data.get('bounds'):
+        # 수정: 지도의 줌/이동(bounds)에 따라 데이터가 동적으로 변하도록 순서 변경
+        if map_data and map_data.get('bounds'):
             bounds = map_data['bounds']
             lat_min = bounds['_southWest']['lat']
             lat_max = bounds['_northEast']['lat']
@@ -527,8 +526,20 @@ elif page == "📍 상권 및 위치 분석":
                 (fdf['위도'] >= lat_min) & (fdf['위도'] <= lat_max) &
                 (fdf['경도'] >= lng_min) & (fdf['경도'] <= lng_max)
             ].copy()
-            grp_col = '상권구분'
-            level_name = f"🗺️ 현재 지도 화면 범위 ({len(view_df)}개 팝업)"
+            
+            # 화면 내 상권이 하나뿐이면 카테고리별 분석으로 자동 전환
+            if view_df['상권구분'].nunique() == 1:
+                grp_col = '식품_세부분류'
+                area_name = view_df['상권구분'].iloc[0]
+                level_name = f"📌 {area_name} 상권 ({len(view_df)}개 팝업)"
+            else:
+                grp_col = '상권구분'
+                level_name = f"🗺️ 현재 지도 화면 범위 ({len(view_df)}개 팝업)"
+        elif st.session_state['drill_area']:
+            # 지도 로딩 직후라 bounds가 아직 안 넘어왔을 때 fallback
+            view_df = fdf[fdf['상권구분'] == st.session_state['drill_area']].copy()
+            grp_col = '식품_세부분류'
+            level_name = f"📌 {st.session_state['drill_area']} 상권"
         else:
             view_df = fdf.copy()
             grp_col = '상권구분'
@@ -536,7 +547,7 @@ elif page == "📍 상권 및 위치 분석":
 
     with summary_col:
         st.markdown('<p class="section-title">상권별 핵심 지표 요약</p>', unsafe_allow_html=True)
-        summary_df = fdf.groupby('상권구분').agg(
+        summary_df = view_df.groupby('상권구분').agg(
             평균대관료=('대관료(원)', 'mean'),
             평균총지출=('총_지출_비용(원)', 'mean'),
             평균순수익=('순수익(원)', 'mean'),
@@ -667,7 +678,7 @@ elif page == "🍜 식품 분류 분석":
     with c3:
         df_p = food_agg.sort_values('객단가', ascending=False)
         fig = go.Figure(go.Bar(x=df_p.index, y=df_p['객단가'], marker_color='#9B59B6',
-            text=[f"{fmt_money(v)}원" for v in df_p['객단가']], textposition='outside',
+            text=[f"{v:,.0f}원" for v in df_p['객단가']], textposition='outside',
             hovertemplate='%{y:,.0f}원<extra></extra>'))
         fig.update_layout(**L(320, margin=dict(t=80,b=40,l=40,r=40)), title="평균 객단가 (원)", xaxis=dict(**ax()), yaxis=dict(**ax(), range=[0, df_p['객단가'].max()*1.15]))
         st.plotly_chart(fig, use_container_width=True)
@@ -707,7 +718,7 @@ elif page == "🍜 식품 분류 분석":
         ))
     fig.add_vline(x=food_agg['운영기간'].mean(), line_width=1, line_dash="dash", line_color="gray")
     fig.add_hline(y=food_agg['매출'].mean(), line_width=1, line_dash="dash", line_color="gray")
-    fig.update_layout(**L(400), 
+    fig.update_layout(**L(400, margin=dict(t=80, b=40, l=40, r=40)), 
         xaxis=dict(**ax(), title='평균 운영 기간 (일)'),
         yaxis=dict(**ax(), title='평균 매출 (원)'),
         showlegend=False)
@@ -840,7 +851,7 @@ elif page == "👥 연령대 분석":
         fig.update_layout(**L(320), showlegend=False)
         st.plotly_chart(fig, use_container_width=True)
     with c2:
-        st.markdown('<p class="section-title">전년 동기 대비 연령대별 방문 증감률</p>', unsafe_allow_html=True)
+        st.markdown('<p class="section-title">전년 대비 연령대별 방문 증감률</p>', unsafe_allow_html=True)
         
         # YoY 계산을 위해 연도 필터 무시한 데이터셋 생성 (상권/식품 필터는 유지)
         yoy_df = df.copy()
